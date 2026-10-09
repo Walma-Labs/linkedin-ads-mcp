@@ -413,6 +413,14 @@ OBJECTIVE_OPTIMIZATION = {
     "WEBSITE_CONVERSIONS": "MAX_CONVERSION",
     "BRAND_AWARENESS": "MAX_IMPRESSION",
 }
+# LinkedIn requires partner apps to show this to the advertiser and pass their
+# answer back in `politicalIntent` (EU political advertising rules).
+POLITICAL_NOTICE = (
+    "I confirm this is not political advertising. None of my ads qualify as political "
+    "advertising under the law of the targeted countries, including EU law for ads "
+    "targeted to the EU. Advertisers must comply with LinkedIn's policies and regulatory "
+    "requirements. https://www.linkedin.com/legal/ads-policy"
+)
 CTA_LABELS = {
     "APPLY", "DOWNLOAD", "VIEW_QUOTE", "LEARN_MORE", "SIGN_UP", "SUBSCRIBE",
     "REGISTER", "JOIN", "ATTEND", "REQUEST_DEMO", "SEE_MORE", "BUY_NOW", "SHOP_NOW",
@@ -513,6 +521,7 @@ def create_campaign(
     exclude: dict[str, list[str]] | None = None,
     locale: str = "sv_SE",
     audience_expansion: bool = False,
+    advertiser_confirmed_not_political: bool = False,
 ) -> dict[str, Any]:
     """Create a Sponsored Content campaign as a DRAFT, with automated bidding for the
     objective. Nothing runs until someone launches it in Campaign Manager.
@@ -525,8 +534,15 @@ def create_campaign(
             "titles": ["urn:li:title:153"], "staffCountRanges": ["urn:li:staffCountRange:(201,500)"]}.
         exclude: Same shape, members matching any of these are excluded.
         locale: Ad language as ll_CC; also sets the campaign locale.
+        advertiser_confirmed_not_political: Must be True, and only after the user has
+            seen and accepted this statement (LinkedIn requires it to be shown to the
+            advertiser): "I confirm this is not political advertising. None of my ads
+            qualify as political advertising under the law of the targeted countries,
+            including EU law for ads targeted to the EU."
     """
     _require_write()
+    if not advertiser_confirmed_not_political:
+        raise ValueError("Show the user this statement and ask them to confirm it first: " + POLITICAL_NOTICE)
     if objective not in OBJECTIVE_OPTIMIZATION:
         raise ValueError(f"objective must be one of {sorted(OBJECTIVE_OPTIMIZATION)}")
     if "locations" not in targeting:
@@ -549,6 +565,7 @@ def create_campaign(
         "connectedTelevisionOnly": False,
         "runSchedule": {"start": _ms(start_date), **({"end": _ms(end_date)} if end_date else {})},
         "targetingCriteria": _targeting(targeting, exclude),
+        "politicalIntent": "NOT_POLITICAL",
         "status": "DRAFT",
     }
     resp = _write("POST", f"/adAccounts/{account_id}/adCampaigns", body)

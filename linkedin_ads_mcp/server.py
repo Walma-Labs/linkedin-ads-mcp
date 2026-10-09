@@ -222,10 +222,11 @@ def list_campaigns(
     Args:
         account_id: Numeric ad account ID from list_ad_accounts.
         statuses: Filter, any of ACTIVE, PAUSED, DRAFT, COMPLETED, CANCELED, ARCHIVED.
-            Defaults to ACTIVE and PAUSED.
+            Defaults to everything except ARCHIVED and CANCELED, so finished
+            campaigns still show up (most accounts are mostly COMPLETED).
         include_groups: Also return campaign groups with their budgets.
     """
-    statuses = statuses or ["ACTIVE", "PAUSED"]
+    statuses = statuses or ["ACTIVE", "PAUSED", "COMPLETED", "DRAFT"]
     search = f"(status:(values:{_list(statuses)}))"
     camps = _paged(f"/adAccounts/{account_id}/adCampaigns", {"q": "search", "search": search})
     result: dict[str, Any] = {"campaigns": [{

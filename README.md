@@ -14,7 +14,11 @@ Built by [Walma AI](https://walma.ai) to run our own LinkedIn ads through Claude
 | `compare_periods` | Two date ranges side by side with deltas, per campaign or any other pivot |
 | `list_creatives` | Ads per account or campaign with status and review state |
 
-The default scopes are `r_ads r_ads_reporting`, so the server cannot change anything.
+| `search_targeting` | Targeting URNs (locations, job titles, seniorities, company sizes, industries …) |
+| `create_campaign_group` / `create_campaign` / `create_ad` | Build a campaign as **drafts** (needs `rw_ads`) |
+| `delete_draft` | Remove a draft this server created |
+
+The default scopes are `r_ads r_ads_reporting`, so the server cannot change anything. To let it build campaigns, log in once with `LINKEDIN_SCOPES='r_ads r_ads_reporting rw_ads' linkedin-ads-mcp auth`. Even then everything is created as `DRAFT` and there is no tool that activates anything: a person reviews and launches in Campaign Manager, so no money is spent from a chat. Ads are posted as the ad account's company page; if LinkedIn refuses that, add `w_organization_social` to the scopes.
 
 ## Setup
 

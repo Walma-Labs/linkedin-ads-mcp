@@ -75,6 +75,15 @@ def _refresh(tok: dict) -> dict:
     return new
 
 
+def granted_scopes() -> set[str]:
+    """Scopes on the stored token (LinkedIn returns them comma-separated)."""
+    try:
+        raw = _load().get("scope", "")
+    except RuntimeError:
+        return set()
+    return {x.strip() for x in raw.replace(",", " ").split() if x.strip()}
+
+
 def access_token() -> str:
     tok = _load()
     if tok.get("access_expires_at", 0) - REFRESH_MARGIN < time.time():

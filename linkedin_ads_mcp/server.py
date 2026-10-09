@@ -237,8 +237,11 @@ def list_campaigns(
         "group": _id(c.get("campaignGroup", "")), "runSchedule": c.get("runSchedule"),
     } for c in camps]}
     if include_groups:
+        # Campaign groups have no COMPLETED status; LinkedIn rejects the whole
+        # search (400 Invalid param) if it is included.
+        group_statuses = [st for st in statuses if st != "COMPLETED"] or ["ACTIVE"]
         groups = _paged(f"/adAccounts/{account_id}/adCampaignGroups",
-                        {"q": "search", "search": search})
+                        {"q": "search", "search": f"(status:(values:{_list(group_statuses)}))"})
         result["groups"] = [{
             "id": g["id"], "name": g.get("name"), "status": g.get("status"),
             "totalBudget": _money(g.get("totalBudget")), "runSchedule": g.get("runSchedule"),

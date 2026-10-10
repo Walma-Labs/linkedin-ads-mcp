@@ -6,3 +6,4 @@ build/
 *.json.key
 token*.json
 .DS_Store
+node_modules/

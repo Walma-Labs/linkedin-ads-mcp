@@ -2,7 +2,7 @@
 
 A [Model Context Protocol](https://modelcontextprotocol.io) server that gives Claude, Cursor, Claude Code and other MCP clients access to LinkedIn Campaign Manager: accounts, campaigns, creatives, performance, period comparisons and audience demographics — plus, opt-in, building campaigns as **drafts**.
 
-Built by [Walma AI](https://walma.ai) to run our own LinkedIn ads through Claude, and hosted per customer on the Walma MCP chassis.
+Built by [Walma AI](https://walma.ai) to run our own LinkedIn ads through Claude, and hosted per customer on the Walma MCP chassis. There is a longer write-up in our guide: [LinkedIn Ads MCP](https://walma.ai/en/guides/mcp/linkedin-ads-mcp). For how marketing teams use servers like this one, see [AI for marketing](https://walma.ai/en/ai-for-marketing).
 
 ## Tools
 
@@ -30,23 +30,31 @@ Built by [Walma AI](https://walma.ai) to run our own LinkedIn ads through Claude
 2. Under *Auth*, add the redirect URL `http://localhost:8790/callback`.
 3. On the Development tier, add each ad account the app may manage under *Products → Advertising API → View ad accounts* (max 5; needed for writes).
 4. Your LinkedIn user needs a role on each ad account (Viewer to read, Campaign Manager or higher to build drafts).
-5. Sign in once:
+5. Install (the package is not on npm yet; Node 20 or newer):
+
+```bash
+git clone https://github.com/Walma-Labs/linkedin-ads-mcp.git
+cd linkedin-ads-mcp
+npm install   # also builds
+```
+
+6. Sign in once:
 
 ```bash
 export LINKEDIN_CLIENT_ID=... LINKEDIN_CLIENT_SECRET=...
-npx @walma-labs/linkedin-ads-mcp auth
+node dist/cli.js auth
 # drafts too:
-LINKEDIN_SCOPES='r_ads r_ads_reporting rw_ads' npx @walma-labs/linkedin-ads-mcp auth
+LINKEDIN_SCOPES='r_ads r_ads_reporting rw_ads' node dist/cli.js auth
 ```
 
 Tokens go to `~/.config/linkedin-ads-mcp/token.json` (mode 600). Access tokens last 60 days and refresh automatically; the refresh token lasts 365 days, then sign in again.
 
-6. Add it to Claude Code:
+7. Add it to Claude Code (absolute path to your clone):
 
 ```bash
 claude mcp add linkedin-ads -s user \
   -e LINKEDIN_CLIENT_ID=... -e LINKEDIN_CLIENT_SECRET=... \
-  -- npx -y @walma-labs/linkedin-ads-mcp
+  -- node /absolute/path/to/linkedin-ads-mcp/dist/cli.js
 ```
 
 ## Hosted (Walma MCP chassis)

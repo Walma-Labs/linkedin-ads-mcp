@@ -61,6 +61,19 @@ claude mcp add linkedin-ads -s user \
 
 The package exports `createLinkedInAdsServer(client, options)` and `createLinkedInClient()`. In server mode the client reads `LINKEDIN_REFRESH_TOKEN` (plus client ID/secret) from the environment and keeps the access token in memory only. Draft tools are off unless `LINKEDIN_ADS_DRAFT_TOOLS=1`.
 
+## Docker
+
+The repository ships a Dockerfile that runs the stdio server as a non-root user. Sign in once on the host with `node dist/cli.js auth` (see Setup) and pass the refresh token from the token file it writes as `LINKEDIN_REFRESH_TOKEN`:
+
+```bash
+docker build -t linkedin-ads-mcp .
+docker run -i --rm \
+  -e LINKEDIN_CLIENT_ID -e LINKEDIN_CLIENT_SECRET -e LINKEDIN_REFRESH_TOKEN \
+  linkedin-ads-mcp
+```
+
+Set `LINKEDIN_ADS_DRAFT_TOOLS=0` to hide the draft-building tools.
+
 ## Configuration
 
 | Variable | Default | |

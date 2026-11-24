@@ -1,6 +1,6 @@
 {
   "name": "@walma-labs/linkedin-ads-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "LinkedIn Ads MCP server: campaigns, creatives, performance, period comparison and audience demographics from Campaign Manager. Read-only by default; draft-only campaign building is opt-in.",
   "license": "MIT",
   "repository": {

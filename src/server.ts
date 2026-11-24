@@ -21,7 +21,7 @@ import {
   type Granularity, type Pivot,
 } from "./logic.js";
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 
 export const INSTRUCTIONS =
   "LinkedIn Campaign Manager data via the Marketing API. Call list_ad_accounts first to " +
@@ -41,6 +41,87 @@ export interface ServerOptions {
    * bin: in a shared container a "path" could be any file, including the
    * process environment with its credentials. */
   allowLocalFiles?: boolean;
+  /** Only these ad accounts are reachable; every other account the signed-in
+   * user has a role on is hidden and refused. Defaults to
+   * LINKEDIN_AD_ACCOUNT_IDS (comma-separated). Unset or empty = no restriction.
+   * The token is shared by everyone who can call the server, so a hosted
+   * instance for one customer must name that customer's accounts here. */
+  accountIds?: string[];
+}
+
+/** Parse LINKEDIN_AD_ACCOUNT_IDS. A value that is not a numeric ID is an error,
+ * not an ignored entry: a typo must never widen what the server exposes. */
+export function parseAccountIds(raw: string | undefined): string[] | undefined {
+  const ids = (raw ?? "").split(/[\s,]+/).filter(Boolean);
+  if (!ids.length) return undefined;
+  const bad = ids.filter(id => !/^\d+$/.test(id));
+  if (bad.length) throw new Error(`LINKEDIN_AD_ACCOUNT_IDS must be numeric ad account IDs; got: ${bad.join(", ")}`);
+  return ids;
+}
+
+/** IDs end up in URL paths and URNs, so they must be plain numbers. */
+function numericId(value: string, what: string): string {
+  if (!/^\d+$/.test(value)) throw new Error(`${what} must be a numeric ID`);
+  return value;
+}
+
+/** The checks every tool runs its IDs through. */
+export interface AccountGuard {
+  restricted: boolean;
+  /** The account ID, if it is numeric and allowed. */
+  account(id: string): string;
+  /** Throws unless every campaign belongs to the (allowed) account. */
+  campaigns(accountId: string, ids: string[] | undefined): Promise<void>;
+  /** Throws unless the campaign group belongs to the (allowed) account. */
+  group(accountId: string, id: string): Promise<void>;
+}
+
+export function createAccountGuard(client: LinkedInClient, accountIds: string[] | undefined): AccountGuard {
+  const allowed = accountIds?.length ? new Set(accountIds.map(id => numericId(id, "accountIds entry"))) : null;
+  const owned = async (accountId: string, segment: string, what: string, id: string) => {
+    numericId(id, what);
+    // Without a restriction LinkedIn's own permissions are the only boundary,
+    // as before. With one, an ID from another account must not be a way around it.
+    if (!allowed) return;
+    const entity = await client.get(`/adAccounts/${accountId}/${segment}/${id}`);
+    if (entity?.account !== `urn:li:sponsoredAccount:${accountId}`) {
+      throw new Error(`${what} ${id} does not belong to ad account ${accountId}`);
+    }
+  };
+  return {
+    restricted: !!allowed,
+    account(id) {
+      numericId(id, "account_id");
+      if (allowed && !allowed.has(id)) throw new Error(`Ad account ${id} is not available on this server.`);
+      return id;
+    },
+    async campaigns(accountId, ids) {
+      for (const id of ids ?? []) await owned(accountId, "adCampaigns", "campaign_id", id);
+    },
+    group: (accountId, id) => owned(accountId, "adCampaignGroups", "campaign_group_id", id),
+  };
+}
+
+/** Backstop under the tools: with a restriction, no request may name an ad
+ * account outside it, whatever a tool does. */
+export function restrictClient(client: LinkedInClient, accountIds: string[] | undefined): LinkedInClient {
+  if (!accountIds?.length) return client;
+  const allowed = new Set(accountIds);
+  const check = (path: string, params?: Record<string, string>) => {
+    if (path.includes("..") || /[?#]/.test(path)) throw new Error("Refusing a malformed LinkedIn API path");
+    const m = /^\/adAccounts\/([^/]+)/.exec(path);
+    if (m && !allowed.has(m[1]!)) throw new Error(`Ad account ${m[1]} is not available on this server.`);
+    for (const urn of (params?.accounts ?? "").match(/sponsoredAccount(?::|%3A)(\d+)/gi) ?? []) {
+      const id = urn.replace(/^.*?(\d+)$/, "$1");
+      if (!allowed.has(id)) throw new Error(`Ad account ${id} is not available on this server.`);
+    }
+  };
+  return {
+    get: (path, params) => { check(path, params); return client.get(path, params); },
+    send: (method, path, body, params) => { check(path, params); return client.send(method, path, body, params); },
+    uploadBinary: (url, data) => client.uploadBinary(url, data),
+    scopes: () => client.scopes(),
+  };
 }
 
 /** True for loopback, private, link-local, CGNAT and unique-local addresses. */
@@ -73,9 +154,12 @@ function jsonResult(value: unknown) {
 }
 
 export function createLinkedInAdsServer(
-  client: LinkedInClient = createLinkedInClient(),
+  rawClient: LinkedInClient = createLinkedInClient(),
   opts: ServerOptions = { draftTools: process.env.LINKEDIN_ADS_DRAFT_TOOLS === "1" },
 ): McpServer {
+  const accountIds = opts.accountIds ?? parseAccountIds(process.env.LINKEDIN_AD_ACCOUNT_IDS);
+  const client = restrictClient(rawClient, accountIds);
+  const guard = createAccountGuard(client, accountIds);
   const server = new McpServer(
     { name: "linkedin-ads", version: VERSION },
     { instructions: INSTRUCTIONS + (opts.draftTools ? DRAFT_INSTRUCTIONS : "") },
@@ -145,6 +229,7 @@ export function createLinkedInAdsServer(
     const out = [];
     for (const u of users) {
       const id = idOf(u.account);
+      if (accountIds?.length && !accountIds.includes(id)) continue;
       const acc = await client.get(`/adAccounts/${id}`);
       out.push({ id, name: acc.name, currency: acc.currency, status: acc.status, type: acc.type, role: u.role, servingStatuses: acc.servingStatuses });
     }
@@ -160,6 +245,7 @@ export function createLinkedInAdsServer(
       include_groups: z.boolean().default(true),
     },
   }, async ({ account_id, statuses, include_groups }) => {
+    guard.account(account_id);
     const st = statuses?.length ? statuses : DEFAULT_CAMPAIGN_STATUSES;
     const camps = await paged(`/adAccounts/${account_id}/adCampaigns`, { q: "search", search: `(status:(values:${restliList(st)}))` });
     const result: Record<string, unknown> = {
@@ -197,6 +283,8 @@ export function createLinkedInAdsServer(
   }, async (a) => {
     const range = a.start_date && a.end_date ? { start: a.start_date, end: a.end_date } : defaultRange();
     const metrics = a.metrics?.length ? a.metrics : DEFAULT_METRICS;
+    guard.account(a.account_id);
+    await guard.campaigns(a.account_id, a.campaign_ids);
     const els = await analytics(a.account_id, range.start, range.end, a.pivot, a.granularity, metrics, a.campaign_ids);
     const r = (await rows(a.account_id, els, a.pivot, a.granularity))
       .sort((x, y) => String(x.date ?? "").localeCompare(String(y.date ?? "")) || (y.costInLocalCurrency ?? 0) - (x.costInLocalCurrency ?? 0));
@@ -216,6 +304,7 @@ export function createLinkedInAdsServer(
       row_limit: z.number().int().min(1).max(500).default(50),
     },
   }, async (a) => {
+    guard.account(a.account_id);
     const fields = ["impressions", "clicks", "costInLocalCurrency", "externalWebsiteConversions", "oneClickLeads"];
     const run = async (s: string, e: string) => {
       const r = await rows(a.account_id, await analytics(a.account_id, s, e, a.pivot, "ALL", fields), a.pivot, "ALL");
@@ -253,6 +342,8 @@ export function createLinkedInAdsServer(
       campaign_ids: z.array(z.string()).optional(),
     },
   }, async ({ account_id, campaign_ids }) => {
+    guard.account(account_id);
+    await guard.campaigns(account_id, campaign_ids);
     const params: Record<string, string> = { q: "criteria" };
     if (campaign_ids?.length) params.campaigns = restliList(campaign_ids.map(c => `urn:li:sponsoredCampaign:${c}`));
     const r = await paged(`/adAccounts/${account_id}/creatives`, params);
@@ -277,19 +368,19 @@ export function createLinkedInAdsServer(
     return jsonResult(els.slice(0, limit).map((e: any) => ({ urn: e.urn, name: e.name })));
   });
 
-  if (opts.draftTools) registerDraftTools(server, client, !!opts.allowLocalFiles);
+  if (opts.draftTools) registerDraftTools(server, client, guard, !!opts.allowLocalFiles);
   return server;
 }
 
 // ─── Draft-only campaign building ─────────────────────────────────────────
 
-function registerDraftTools(server: McpServer, client: LinkedInClient, allowLocalFiles: boolean) {
+function registerDraftTools(server: McpServer, client: LinkedInClient, guard: AccountGuard, allowLocalFiles: boolean) {
   async function requireWrite() {
     if (!(await client.scopes()).has("rw_ads")) {
       throw new Error("The LinkedIn token is read-only. Sign in again with write access: LINKEDIN_SCOPES='r_ads r_ads_reporting rw_ads' linkedin-ads-mcp auth");
     }
   }
-  const account = (id: string) => client.get(`/adAccounts/${id}`);
+  const account = (id: string) => client.get(`/adAccounts/${guard.account(id)}`);
   const schedule = (start: string, end?: string) => ({ start: epochMs(start), ...(end ? { end: epochMs(end) } : {}) });
 
   server.registerTool("create_campaign_group", {
@@ -340,6 +431,7 @@ function registerDraftTools(server: McpServer, client: LinkedInClient, allowLoca
     if (!a.advertiser_confirmed_not_political) throw new Error(`Show the user this statement and ask them to confirm it first: ${POLITICAL_NOTICE}`);
     if (!a.targeting.locations?.length) throw new Error("targeting must include 'locations' (LinkedIn requires a location)");
     const acct = await account(a.account_id);
+    await guard.group(a.account_id, a.campaign_group_id);
     const [language, country] = a.locale.split("_");
     const resp = await client.send("POST", `/adAccounts/${a.account_id}/adCampaigns`, {
       account: `urn:li:sponsoredAccount:${a.account_id}`,
@@ -385,6 +477,8 @@ function registerDraftTools(server: McpServer, client: LinkedInClient, allowLoca
     await requireWrite();
     const owner: string = (await account(a.account_id)).reference ?? "";
     if (!owner.startsWith("urn:li:organization:")) throw new Error("The ad account is not linked to a company page; link one in Campaign Manager.");
+    await guard.campaigns(a.account_id, [a.campaign_id]);
+    if (a.lead_form_id) numericId(a.lead_form_id, "lead_form_id");
 
     let image = a.image_urn;
     if (!image) {
@@ -439,6 +533,8 @@ function registerDraftTools(server: McpServer, client: LinkedInClient, allowLoca
     },
   }, async ({ account_id, kind, entity_id }) => {
     await requireWrite();
+    guard.account(account_id);
+    numericId(entity_id, "entity_id");
     const path = {
       campaign_group: `/adAccounts/${account_id}/adCampaignGroups/${entity_id}`,
       campaign: `/adAccounts/${account_id}/adCampaigns/${entity_id}`,

@@ -5,7 +5,7 @@
 import { describe, it, expect } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createLinkedInAdsServer, type ServerOptions } from "../src/server.js";
+import { createLinkedInAdsServer, parseAccountIds, restrictClient, type ServerOptions } from "../src/server.js";
 import type { LinkedInClient } from "../src/linkedin.js";
 
 function fake(opts: { scopes?: string[]; status?: string } = {}) {
@@ -118,5 +118,129 @@ describe("linkedin-ads MCP server", () => {
     const r = await live.callTool({ name: "delete_draft", arguments: { account_id: "5", kind: "campaign", entity_id: "9" } });
     expect(r.isError).toBe(true);
     expect(text(r)).toMatch(/Refusing/);
+  });
+
+  describe("account restriction", () => {
+    // The signed-in user has a role on three accounts; this server is for account 5 only.
+    function shared() {
+      const gets: string[] = [];
+      const sends: string[] = [];
+      const client: LinkedInClient = {
+        async get(path, params) {
+          gets.push(path + (params?.accounts ? `?accounts=${params.accounts}` : "") + (params?.campaigns ? `?campaigns=${params.campaigns}` : ""));
+          if (path === "/adAccountUsers") {
+            return { elements: ["5", "6", "7"].map(id => ({ account: `urn:li:sponsoredAccount:${id}`, role: "ACCOUNT_MANAGER" })) };
+          }
+          const acc = /^\/adAccounts\/(\d+)$/.exec(path);
+          if (acc) return { name: `Account ${acc[1]}`, currency: "SEK", status: "ACTIVE", reference: "urn:li:organization:77" };
+          // Campaign 9 and group 3 are in account 5; campaign 60 and group 61 are in account 6.
+          const ent = /^\/adAccounts\/(\d+)\/(adCampaigns|adCampaignGroups)\/(\d+)$/.exec(path);
+          if (ent) return { status: "DRAFT", account: `urn:li:sponsoredAccount:${["9", "3"].includes(ent[3]!) ? "5" : "6"}` };
+          return { elements: [] };
+        },
+        async send(method, path) {
+          sends.push(`${method} ${path}`);
+          return { status: 201, headers: { "x-restli-id": "1" }, data: { value: {} } };
+        },
+        async uploadBinary() { /* not used */ },
+        async scopes() { return new Set(["r_ads", "r_ads_reporting", "rw_ads"]); },
+      };
+      return { client, gets, sends };
+    }
+    const only5: ServerOptions = { accountIds: ["5"], draftTools: true };
+    const refused = async (mcp: Client, name: string, args: Record<string, unknown>, match: RegExp) => {
+      const r: any = await mcp.callTool({ name, arguments: args });
+      expect(r.isError).toBe(true);
+      expect(text(r)).toMatch(match);
+    };
+
+    it("lists only the allowed accounts and never fetches the others", async () => {
+      const f = shared();
+      const mcp = await connect(f.client, only5);
+      expect(json(await mcp.callTool({ name: "list_ad_accounts", arguments: {} })).map((a: any) => a.id)).toEqual(["5"]);
+      expect(f.gets.filter(p => /^\/adAccounts\/[67]/.test(p))).toEqual([]);
+    });
+
+    it("refuses every tool for an account outside the list, before calling LinkedIn", async () => {
+      const f = shared();
+      const mcp = await connect(f.client, only5);
+      const na = /not available on this server/;
+      await refused(mcp, "list_campaigns", { account_id: "6" }, na);
+      await refused(mcp, "get_performance", { account_id: "6" }, na);
+      await refused(mcp, "compare_periods", { account_id: "6", current_start: "2026-09-01", current_end: "2026-09-30", previous_start: "2026-08-01", previous_end: "2026-08-31" }, na);
+      await refused(mcp, "list_creatives", { account_id: "6" }, na);
+      await refused(mcp, "create_campaign_group", { account_id: "6", name: "x", start_date: "2026-12-01" }, na);
+      await refused(mcp, "create_ad", { account_id: "6", campaign_id: "60", name: "x", intro_text: "x", headline: "x", image_urn: "urn:li:image:1", landing_page: "https://example.com" }, na);
+      await refused(mcp, "delete_draft", { account_id: "6", kind: "campaign", entity_id: "60" }, na);
+      expect(f.gets).toEqual([]);
+      expect(f.sends).toEqual([]);
+    });
+
+    it("refuses another account's campaign or group passed under an allowed account", async () => {
+      const f = shared();
+      const mcp = await connect(f.client, only5);
+      const other = /does not belong to ad account 5/;
+      await refused(mcp, "get_performance", { account_id: "5", campaign_ids: ["60"] }, other);
+      await refused(mcp, "list_creatives", { account_id: "5", campaign_ids: ["9", "60"] }, other);
+      await refused(mcp, "create_ad", { account_id: "5", campaign_id: "60", name: "x", intro_text: "x", headline: "x", image_urn: "urn:li:image:1", landing_page: "https://example.com" }, other);
+      await refused(mcp, "create_campaign", {
+        account_id: "5", campaign_group_id: "61", name: "x", objective: "WEBSITE_VISIT", daily_budget: 100,
+        targeting: { locations: ["urn:li:geo:1"] }, start_date: "2026-12-01", advertiser_confirmed_not_political: true,
+      }, other);
+      expect(f.gets.some(p => p.startsWith("/adAnalytics"))).toBe(false);
+      expect(f.sends).toEqual([]);
+      // The account's own campaign still works.
+      const ok: any = await mcp.callTool({ name: "get_performance", arguments: { account_id: "5", campaign_ids: ["9"] } });
+      expect(ok.isError).toBeFalsy();
+    });
+
+    it("refuses IDs that are not plain numbers, with or without a restriction", async () => {
+      for (const opts of [only5, { draftTools: true }]) {
+        const f = shared();
+        const mcp = await connect(f.client, opts);
+        await refused(mcp, "list_campaigns", { account_id: "5/../6" }, /numeric ID/);
+        await refused(mcp, "get_performance", { account_id: "5", campaign_ids: ["9),urn:li:sponsoredCampaign:60"] }, /numeric ID/);
+        await refused(mcp, "delete_draft", { account_id: "5", kind: "campaign", entity_id: "../../6/adCampaigns/60" }, /numeric ID/);
+        expect(f.gets).toEqual([]);
+        expect(f.sends).toEqual([]);
+      }
+    });
+
+    it("changes nothing when no restriction is set", async () => {
+      const f = shared();
+      const mcp = await connect(f.client, {});
+      expect(json(await mcp.callTool({ name: "list_ad_accounts", arguments: {} })).map((a: any) => a.id)).toEqual(["5", "6", "7"]);
+      const r: any = await mcp.callTool({ name: "get_performance", arguments: { account_id: "6", campaign_ids: ["60"] } });
+      expect(r.isError).toBeFalsy();
+      // No ownership lookups: LinkedIn's own permissions are the boundary, as before.
+      expect(f.gets.some(p => /adCampaigns\/60$/.test(p))).toBe(false);
+    });
+
+    it("reads the list from LINKEDIN_AD_ACCOUNT_IDS and fails closed on a typo", async () => {
+      expect(parseAccountIds(undefined)).toBeUndefined();
+      expect(parseAccountIds("  ")).toBeUndefined();
+      expect(parseAccountIds("5, 6\n7")).toEqual(["5", "6", "7"]);
+      expect(() => parseAccountIds("5,urn:li:sponsoredAccount:6")).toThrow(/numeric/);
+      process.env.LINKEDIN_AD_ACCOUNT_IDS = "5";
+      try {
+        const mcp = await connect(shared().client, { draftTools: false });
+        expect(json(await mcp.callTool({ name: "list_ad_accounts", arguments: {} })).map((a: any) => a.id)).toEqual(["5"]);
+        process.env.LINKEDIN_AD_ACCOUNT_IDS = "5,abc";
+        expect(() => createLinkedInAdsServer(shared().client, {})).toThrow(/numeric/);
+      } finally {
+        delete process.env.LINKEDIN_AD_ACCOUNT_IDS;
+      }
+    });
+
+    it("stops a request for another account at the client, whatever a tool does", async () => {
+      const f = shared();
+      const c = restrictClient(f.client, ["5"]);
+      expect(() => c.get("/adAccounts/6/adCampaigns")).toThrow(/not available/);
+      expect(() => c.get("/adAccounts/5/../6")).toThrow(/malformed/);
+      expect(() => c.get("/adAnalytics", { accounts: "List(urn%3Ali%3AsponsoredAccount%3A6)" })).toThrow(/not available/);
+      expect(() => c.send("POST", "/adAccounts/7/adCampaigns", {})).toThrow(/not available/);
+      await c.get("/adAnalytics", { accounts: "List(urn%3Ali%3AsponsoredAccount%3A5)" });
+      expect(f.gets.length).toBe(1);
+    });
   });
 });

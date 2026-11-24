@@ -74,6 +74,23 @@ docker run -i --rm \
 
 Set `LINKEDIN_ADS_DRAFT_TOOLS=0` to hide the draft-building tools.
 
+### Restricting the server to some ad accounts
+
+Everyone who can call a hosted server shares one LinkedIn sign-in, and sees every ad account that user has a role on. An agency user typically has roles on several customers' accounts. Set `LINKEDIN_AD_ACCOUNT_IDS` (or pass `accountIds` to `createLinkedInAdsServer`) to the accounts this server is for:
+
+```bash
+LINKEDIN_AD_ACCOUNT_IDS=507861357,512345678
+```
+
+With the list set:
+
+- `list_ad_accounts` returns only those accounts, and the others are never fetched.
+- Every tool refuses an `account_id` outside the list before calling LinkedIn.
+- A campaign or campaign group ID is checked against its account, so an ID from another account cannot be passed under an allowed one.
+- A value that is not a numeric ID stops the server instead of being ignored.
+
+IDs must be plain numbers in every mode, since they are used in URL paths.
+
 ## Configuration
 
 | Variable | Default | |
@@ -83,6 +100,7 @@ Set `LINKEDIN_ADS_DRAFT_TOOLS=0` to hide the draft-building tools.
 | `LINKEDIN_TOKEN_FILE` | `~/.config/linkedin-ads-mcp/token.json` | Local mode |
 | `LINKEDIN_SCOPES` | `r_ads r_ads_reporting` | Used by `auth` |
 | `LINKEDIN_ADS_DRAFT_TOOLS` | `1` locally, off in server mode | Register the draft-building tools |
+| `LINKEDIN_AD_ACCOUNT_IDS` | unset (every account the user has a role on) | Comma-separated ad account IDs. Only these are listed and reachable. See below. |
 | `LINKEDIN_API_VERSION` | `202609` | `LinkedIn-Version` header (YYYYMM). LinkedIn retires versions after about a year. |
 | `LINKEDIN_REDIRECT_PORT` | `8790` | Must match the redirect URL in the app |
 
